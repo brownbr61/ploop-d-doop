@@ -150,6 +150,8 @@ void initUart(struct UART_INT* this) {
 
 #include <stdint.h>
 #include <stdbool.h>
+#define DRAG_MODE 0
+#define FINISH_COUNT 1000 // todo: need to measure race distance and assign (remember 2x for rising/falling)
 #define NUM_MOTORS 2
 #define NUM_SENSORS 3
 #define Kp 1            // Proportional gain
@@ -163,9 +165,9 @@ void initUart(struct UART_INT* this) {
 void stop(void);
 void move(uint8_t direction);
 void moveForward(void);
-void moveRight(void);
+void turnRight(void);
 void moveBackward(void);
-void moveLeft(void);
+void turnLeft(void);
 void hokeyPokey(void);
 void initSensors(void);
 
@@ -196,6 +198,7 @@ struct Motor {
 
 // Order: left, right
 struct Motor motors[NUM_MOTORS];
+uint64_t cumulativeEncCounts[] = {0, 0};
 uint64_t encoderCounts[] = { 0, 0};
 
 void initPWM(void);
@@ -214,6 +217,9 @@ void initPWMs(void);
 
 // Sets up GPIO inputs for encoder signals + sets up timer for speed check interrupts
 void initEncoders(void);
+
+// Sets up Timer 14 to check distance counts and call PID function
+void initOverseer(void);
 
 // PI control code is called within a timer interrupt
 void PI_update(struct Motor*, uint64_t);
@@ -365,6 +371,7 @@ int main(void)
 //   /* USER CODE END EXTI2_3_IRQn 1 */
 // }
 
+// todo: should be able to get rid of this completely w/ HAL setup
 void calibrate_ADC_manual() {    
   // Ensure ADEN = 0
   if ((ADC1->CR & ADC_CR_ADEN) != 0) {
@@ -493,15 +500,16 @@ void fillDirPins(int *allPins);
 // Sets up the entire motor drive system
 void initMotion() {
     initMotors();
-    initPWM();
-    initEncoders();
+    initPWM();      // todo: should be able to get rid of this b/c of HAL setup
+    initEncoders(); // todo: should be able to get rid of this b/c of HAL setup
+    initOverseer();
 }
 
 /* Initializes all motors in the forward direction in a stopped state */
 void initMotors() {
-    int pwm_in_pins[] = {0, 1};
-    int mtr_A_dir_pins[] = {4, 5};
-    int mtr_B_dir_pins[] = {6, 7};
+    int pwm_in_pins[] = {0, 1};     // PA0-PA1
+    int mtr_A_dir_pins[] = {4, 5};  // PB4-PB5
+    int mtr_B_dir_pins[] = {6, 7};  // PB6-PB7
 
     for (int i = 0; i < NUM_MOTORS; i++) {
         struct Motor *motor = &(motors[i]);
@@ -534,6 +542,7 @@ void initMotors() {
     }
 }
 
+// todo: should be able to get rid of this completely - test remove and interrupts
 // Sets up the PWM and direction signals to drive the H-Bridge
 void initPWM() {
     RCC->AHBENR |= RCC_AHBENR_GPIOAEN | RCC_AHBENR_GPIOBEN;
@@ -575,23 +584,26 @@ void initPWM() {
     TIM2->CCMR1 = 0;                        // (prevents having to manually clear bits)
     TIM2->CCER = 0;
 
-    // Set output-compare CH1-4 to PWM1 mode and enable CCR1 preload buffer
-    TIM2->CCMR1 |= (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1); //| TIM_CCMR1_OC1PE); // Enable channel 1
-    TIM2->CCMR1 |= (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1); //| TIM_CCMR1_OC2PE); // Enable channel 2
+    // Set output-compare CH1-4 to PWM1 mode
+    TIM2->CCMR1 |= (TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC1M_1);   // Enable channel 1
+    TIM2->CCMR1 |= (TIM_CCMR1_OC2M_2 | TIM_CCMR1_OC2M_1);   // Enable channel 2
 
-    TIM2->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC2E);        // Enable capture-compare channel 1-2
-    TIM2->PSC = 1;                         // Run timer on 24Mhz
-    TIM2->ARR = 2400;                      // PWM at 20kHz
+    TIM2->CCER |= (TIM_CCER_CC1E | TIM_CCER_CC2E);          // Enable capture-compare channel 1-2
+    TIM2->PSC = 1;                                          // Run timer on 24Mhz
+    TIM2->ARR = 2400;                                       // PWM at 20kHz
 
-    TIM2->CCR1 = 2000;                        // Start PWMs at 0% duty cycle
+    // todo: change this to zero after testing
+    TIM2->CCR1 = 2000;                                      // Start PWMs at 0% duty cycle
     TIM2->CCR2 = 2000;
 
-    TIM2->CR1 |= TIM_CR1_CEN;              // Enable timer
+    TIM2->CR1 |= TIM_CR1_CEN;                               // Enable timer
 
     // DEBUGGING
-    //TIM2->EGR |= 1; // todo: forces register update
+    //TIM2->EGR |= 1; // todo: forces register update; get rid of after testing
 }
 
+
+// todo: should be able to get rid of this completely - test remove and interrupts
 /* Sets up four GPIO pins for inputs and enable interrupts on rising and falling edge of encoder wave.
  * Sets up timer for speed calculation and PI updates. */
 void initEncoders() {
@@ -599,7 +611,7 @@ void initEncoders() {
     RCC->AHBENR |= RCC_AHBENR_GPIOBEN;
     __HAL_RCC_SYSCFG_CLK_ENABLE();
 
-    // GPIOB2-3
+    // PB2-PB3
     // Clear to input mode
     GPIOB->MODER &= ~(1 << 5);
     GPIOB->MODER &= ~(1 << 4);
@@ -639,14 +651,9 @@ void initEncoders() {
     EXTI->FTSR |= (1 << 3);
 
     // Enable SYSCFG peripheral (this is on APB2 bus)
+    // todo: do we need enable here or is TIM2-3 IRQ firing
     RCC->APB2RSTR |= RCC_APB2RSTR_SYSCFGRST;
     __HAL_RCC_SYSCFG_CLK_ENABLE();
-    // uint32_t tmp = 0;
-    // while(tmp != 0) {
-    //     RCC->APB2ENR |= RCC_APB2ENR_SYSCFGCOMPEN;
-    //     tmp = RCC->APB2ENR & RCC_APB2ENR_SYSCFGEN;
-    // } 
-    // todo: is this correct or do we need to do more to enable here?
 
     // Configure multiplexer to route PA2-3 to EXTI1
     SYSCFG->EXTICR[0] |= SYSCFG_EXTICR1_EXTI2_PB | SYSCFG_EXTICR1_EXTI3_PB;
@@ -654,7 +661,9 @@ void initEncoders() {
     // Enable interrupts
     NVIC_EnableIRQ(EXTI2_3_IRQn);
     NVIC_SetPriority(EXTI2_3_IRQn, 1);
+}
 
+void initOverseer(void) {
     // Configure a second timer (TIM6) to fire an ISR on update event
     // Used to periodically check and update speed variable
     RCC->APB1ENR |= RCC_APB1ENR_TIM6EN;
@@ -678,13 +687,26 @@ void TIM6_DAC_IRQHandler(void) {
      */
     // transmitString("TIM6 is here\r\n");
 
+    if (DRAG_MODE) {
+        int distanceMet = 0;
+        for (int i = 0; i < NUM_MOTORS; i++) {
+            uint64_t currCount = cumulativeEncCounts[i];
+            distanceMet |= currCount >= FINISH_COUNT;
+        }
+        if (distanceMet) {
+            stop();
+        }
+    }
+
     uint64_t tickSum = 0;
     for (int i = 0; i < NUM_MOTORS; i++) {
         struct Motor *motor = &motors[i];
         motor->num_ticks = encoderCounts[i];    // Assign count value to appropriate struct
         tickSum += encoderCounts[i];
+        cumulativeEncCounts[i] += encoderCounts[i]; // Keep track of cumulative counts for drag race mode
         encoderCounts[i] = 0;                   // Reset
     }
+
     uint64_t avgTicks = tickSum / NUM_MOTORS;
     for (int i = 0; i < NUM_MOTORS; i++) {
         struct Motor *motor = &motors[i];
@@ -863,7 +885,7 @@ void moveForward() {
     move(1);
 }
 
-void moveRight() {
+void turnRight() {
     move(2);
 }
 
@@ -871,7 +893,7 @@ void moveBackward() {
     move(3);
 }
 
-void moveLeft() {
+void turnLeft() {
     move(4);
 }
 
@@ -921,7 +943,7 @@ void initSensors() {
         struct Sensor *sensor = &(sensors[i]);
         initSensor(sensor, sensorPins[i]);
     }
-    // todo: may need to init filter here too
+    // todo: may need to init filter here too if we're getting a lot of noise
 }
 
 /**
