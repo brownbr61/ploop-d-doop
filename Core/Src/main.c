@@ -324,12 +324,14 @@ int main(void)
   stop();
   moveForward();
   leds.blue = !leds.blue;
+  leds.red = 0;
   leds.set(&leds);
   HAL_Delay(1000);
   stop();
   HAL_Delay(1000);
   while (1)
   {
+    leds.red = leds.blue;
     leds.blue = !leds.blue;
     leds.set(&leds);
     HAL_Delay(500);
