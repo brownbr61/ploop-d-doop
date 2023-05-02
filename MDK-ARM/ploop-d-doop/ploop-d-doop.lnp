@@ -1,0 +1,27 @@
+--cpu Cortex-M0
+"ploop-d-doop\startup_stm32f072xb.o"
+"ploop-d-doop\main.o"
+"ploop-d-doop\stm32f0xx_it.o"
+"ploop-d-doop\stm32f0xx_hal_msp.o"
+"ploop-d-doop\stm32f0xx_hal_adc.o"
+"ploop-d-doop\stm32f0xx_hal_adc_ex.o"
+"ploop-d-doop\stm32f0xx_hal_rcc.o"
+"ploop-d-doop\stm32f0xx_hal_rcc_ex.o"
+"ploop-d-doop\stm32f0xx_hal.o"
+"ploop-d-doop\stm32f0xx_hal_i2c.o"
+"ploop-d-doop\stm32f0xx_hal_i2c_ex.o"
+"ploop-d-doop\stm32f0xx_hal_gpio.o"
+"ploop-d-doop\stm32f0xx_hal_dma.o"
+"ploop-d-doop\stm32f0xx_hal_cortex.o"
+"ploop-d-doop\stm32f0xx_hal_pwr.o"
+"ploop-d-doop\stm32f0xx_hal_pwr_ex.o"
+"ploop-d-doop\stm32f0xx_hal_flash.o"
+"ploop-d-doop\stm32f0xx_hal_flash_ex.o"
+"ploop-d-doop\stm32f0xx_hal_exti.o"
+"ploop-d-doop\stm32f0xx_hal_tim.o"
+"ploop-d-doop\stm32f0xx_hal_tim_ex.o"
+"ploop-d-doop\system_stm32f0xx.o"
+--strict --scatter "ploop-d-doop\ploop-d-doop.sct"
+--summary_stderr --info summarysizes --map --load_addr_map_info --xref --callgraph --symbols
+--info sizes --info totals --info unused --info veneers
+--list "ploop-d-doop.map" -o ploop-d-doop\ploop-d-doop.axf
